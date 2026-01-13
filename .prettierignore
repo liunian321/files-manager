@@ -1,0 +1,12 @@
+.next
+node_modules
+dist
+build
+public
+*.config.js
+*.config.mjs
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.env*
+uploads
