@@ -96,7 +96,6 @@ export default function FilePreview({ file, onClose }: FilePreviewProps) {
                 alt={file.name}
                 width={1200}
                 height={800}
-                unoptimized
                 className="max-h-full max-w-full rounded object-contain shadow-lg"
               />
             </div>
