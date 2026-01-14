@@ -32,7 +32,7 @@ export default async function FileList({
       } else if (sortBy === 'size') {
         comparison = a.size - b.size;
       } else {
-        comparison = new Date(a.uploadDate).getTime() - new Date(b.uploadDate).getTime();
+        comparison = a.uploadDate.localeCompare(b.uploadDate);
       }
       return order === 'desc' ? -comparison : comparison;
     });
