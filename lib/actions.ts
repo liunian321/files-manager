@@ -5,11 +5,10 @@ import path from 'path';
 import { v7 as uuidv7 } from 'uuid';
 import { revalidatePath } from 'next/cache';
 import { FileMetadata, DiskSpaceInfo } from './types';
-import { cache } from 'react';
+import db from './db';
 
 const UPLOADS_DIR = process.env.STORAGE_PATH || path.join(process.cwd(), 'uploads');
 const TEMP_DIR = path.join(process.cwd(), 'temp_chunks');
-const METADATA_FILE = path.join(process.cwd(), 'data', 'files.json');
 
 async function ensureDirs() {
   try {
@@ -24,26 +23,11 @@ async function ensureDirs() {
   }
 }
 
-const getMetadata = cache(async (): Promise<FileMetadata[]> => {
-  try {
-    const data = await fs.readFile(METADATA_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-});
-
-async function saveMetadata(metadata: FileMetadata[]) {
-  await fs.mkdir(path.dirname(METADATA_FILE), { recursive: true });
-  await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2));
-}
-
 export async function uploadFiles(formData: FormData) {
   const files = formData.getAll('files') as File[];
   if (!files || files.length === 0) throw new Error('No files uploaded');
 
   await ensureDirs();
-  const metadata = await getMetadata();
   const remark = (formData.get('remark') as string) || '';
 
   const newFiles: FileMetadata[] = [];
@@ -68,18 +52,29 @@ export async function uploadFiles(formData: FormData) {
     });
   }
 
-  await saveMetadata([...metadata, ...newFiles]);
+  const insert = db.prepare(`
+    INSERT INTO files (id, name, size, type, uploadDate, remark, path)
+    VALUES (@id, @name, @size, @type, @uploadDate, @remark, @path)
+  `);
+
+  const insertMany = db.transaction((files: FileMetadata[]) => {
+    for (const file of files) {
+      insert.run(file);
+    }
+  });
+
+  insertMany(newFiles);
+
   revalidatePath('/');
   return { success: true };
 }
 
 export async function listFiles() {
-  return await getMetadata();
+  return db.prepare('SELECT * FROM files ORDER BY uploadDate DESC').all() as FileMetadata[];
 }
 
 export async function deleteFile(id: string) {
-  const metadata = await getMetadata();
-  const file = metadata.find((f) => f.id === id);
+  const file = db.prepare('SELECT * FROM files WHERE id = ?').get(id) as FileMetadata | undefined;
 
   if (!file) throw new Error('File not found');
 
@@ -91,44 +86,34 @@ export async function deleteFile(id: string) {
     console.error('Failed to delete physical file:', error);
   }
 
-  const newMetadata = metadata.filter((f) => f.id !== id);
-  await saveMetadata(newMetadata);
+  db.prepare('DELETE FROM files WHERE id = ?').run(id);
 
   revalidatePath('/');
   return { success: true };
 }
 
 export async function updateRemark(id: string, remark: string) {
-  const metadata = await getMetadata();
-  const fileIndex = metadata.findIndex((f) => f.id === id);
+  const result = db.prepare('UPDATE files SET remark = ? WHERE id = ?').run(remark, id);
 
-  if (fileIndex === -1) throw new Error('File not found');
-
-  metadata[fileIndex].remark = remark;
-  await saveMetadata(metadata);
+  if (result.changes === 0) throw new Error('File not found');
 
   revalidatePath('/');
   return { success: true };
 }
 
 export async function renameFile(id: string, newName: string) {
-  const metadata = await getMetadata();
-  const fileIndex = metadata.findIndex((f) => f.id === id);
+  const file = db.prepare('SELECT * FROM files WHERE id = ?').get(id) as FileMetadata | undefined;
+  if (!file) throw new Error('File not found');
 
-  if (fileIndex === -1) throw new Error('File not found');
-
-  const oldFile = metadata[fileIndex];
-  const extension = path.extname(oldFile.name);
+  const oldExtension = path.extname(file.name);
   const newExtension = path.extname(newName);
 
   // 如果新名称没有扩展名，或者扩展名不匹配，则使用原扩展名
-  if (!newExtension || newExtension !== extension) {
-    newName = newName + extension;
+  if (!newExtension || newExtension !== oldExtension) {
+    newName = newName + oldExtension;
   }
 
-  // 更新文件名
-  metadata[fileIndex].name = newName;
-  await saveMetadata(metadata);
+  db.prepare('UPDATE files SET name = ? WHERE id = ?').run(newName, id);
 
   revalidatePath('/');
   return { success: true };
@@ -186,7 +171,6 @@ export async function completeChunkUpload(
   await fs.rm(uploadDir, { recursive: true, force: true });
 
   // Update metadata
-  const metadata = await getMetadata();
   const newFile: FileMetadata = {
     id,
     name: fileName,
@@ -197,18 +181,21 @@ export async function completeChunkUpload(
     path: finalFileName,
   };
 
-  await saveMetadata([...metadata, newFile]);
+  db.prepare(`
+    INSERT INTO files (id, name, size, type, uploadDate, remark, path)
+    VALUES (@id, @name, @size, @type, @uploadDate, @remark, @path)
+  `).run(newFile);
+
   revalidatePath('/');
 
   return { success: true };
 }
 
 export async function deleteMultipleFiles(ids: string[]) {
-  const metadata = await getMetadata();
-  const validIds = new Set(ids);
+  if (ids.length === 0) return { success: true, count: 0 };
 
-  const filesToDelete = metadata.filter((f) => validIds.has(f.id));
-  const newMetadata = metadata.filter((f) => !validIds.has(f.id));
+  const placeholders = ids.map(() => '?').join(',');
+  const filesToDelete = db.prepare(`SELECT * FROM files WHERE id IN (${placeholders})`).all(...ids) as FileMetadata[];
 
   await Promise.allSettled(
     filesToDelete.map(async (file) => {
@@ -221,7 +208,8 @@ export async function deleteMultipleFiles(ids: string[]) {
     }),
   );
 
-  await saveMetadata(newMetadata);
+  db.prepare(`DELETE FROM files WHERE id IN (${placeholders})`).run(...ids);
+
   revalidatePath('/');
   return { success: true, count: filesToDelete.length };
 }
