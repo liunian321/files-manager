@@ -46,27 +46,27 @@ export async function uploadFiles(formData: FormData) {
   const metadata = await getMetadata();
   const remark = (formData.get('remark') as string) || '';
 
-  const newFiles: FileMetadata[] = [];
+  const newFiles: FileMetadata[] = await Promise.all(
+    files.map(async (file) => {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const id = uuidv7();
+      const extension = path.extname(file.name);
+      const fileName = `${id}${extension}`;
+      const filePath = path.join(UPLOADS_DIR, fileName);
 
-  for (const file of files) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const id = uuidv7();
-    const extension = path.extname(file.name);
-    const fileName = `${id}${extension}`;
-    const filePath = path.join(UPLOADS_DIR, fileName);
+      await fs.writeFile(filePath, buffer);
 
-    await fs.writeFile(filePath, buffer);
-
-    newFiles.push({
-      id,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      uploadDate: new Date().toISOString(),
-      remark: remark,
-      path: fileName,
-    });
-  }
+      return {
+        id,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        uploadDate: new Date().toISOString(),
+        remark: remark,
+        path: fileName,
+      };
+    }),
+  );
 
   await saveMetadata([...metadata, ...newFiles]);
   revalidatePath('/');
